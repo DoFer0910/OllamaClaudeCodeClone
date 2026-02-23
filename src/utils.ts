@@ -69,7 +69,6 @@ export interface ParsedToolCall {
 }
 
 // テキスト本文からツール呼び出しJSONを検出するフォールバックパーサー
-// モデルが tool_calls フィールドではなくテキストにJSONを出力した場合に使用
 export function parseToolCallsFromText(text: string): ParsedToolCall[] {
     const results: ParsedToolCall[] = [];
     if (!text || text.trim().length === 0) return results;
@@ -83,10 +82,9 @@ export function parseToolCallsFromText(text: string): ParsedToolCall[] {
         if (parsed) results.push(parsed);
     }
 
-    // コードブロックで見つかったら、それを優先
     if (results.length > 0) return results;
 
-    // パターン2: ブレースバランシングでJSONオブジェクトを正確に切り出す
+    // パターン2: ブレースバランシングでJSONオブジェクトを切り出す
     const jsonObjects = extractBalancedJsonObjects(text);
     for (const jsonStr of jsonObjects) {
         const parsed = tryParseToolCall(jsonStr);
@@ -96,15 +94,40 @@ export function parseToolCallsFromText(text: string): ParsedToolCall[] {
     return results;
 }
 
+// XMLツール呼び出しパーサー（Qwenモデル互換）
+// <tool_call>{"name":"tool_name","arguments":{"key":"value"}}</tool_call> 形式を検出
+export function parseXmlToolCalls(text: string): ParsedToolCall[] {
+    const results: ParsedToolCall[] = [];
+    if (!text || text.trim().length === 0) return results;
+
+    // パターン1: <tool_call>JSON</tool_call>
+    const toolCallPattern = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = toolCallPattern.exec(text)) !== null) {
+        const parsed = tryParseToolCall(match[1].trim());
+        if (parsed) results.push(parsed);
+    }
+
+    // パターン2: <function=tool_name>{"key":"value"}</function>
+    const functionPattern = /<function=(\w+)>\s*([\s\S]*?)\s*<\/function>/g;
+    while ((match = functionPattern.exec(text)) !== null) {
+        try {
+            const args = JSON.parse(match[2].trim());
+            results.push({ name: match[1], arguments: args });
+        } catch { /* パース失敗は無視 */ }
+    }
+
+    return results;
+}
+
 // テキストからブレースバランシングでJSONオブジェクトを抽出する
-// 文字列リテラル内の { } やエスケープ文字を正しく処理する
 function extractBalancedJsonObjects(text: string): string[] {
     const results: string[] = [];
     let i = 0;
 
     while (i < text.length) {
         if (text[i] === '{') {
-            // ブレースバランシングでオブジェクト全体を切り出す
             const start = i;
             let depth = 0;
             let inString = false;
@@ -114,13 +137,11 @@ function extractBalancedJsonObjects(text: string): string[] {
                 const ch = text[j];
 
                 if (escaped) {
-                    // エスケープされた文字はスキップ
                     escaped = false;
                     continue;
                 }
 
                 if (ch === '\\' && inString) {
-                    // 次の文字をエスケープとして扱う
                     escaped = true;
                     continue;
                 }
@@ -138,7 +159,6 @@ function extractBalancedJsonObjects(text: string): string[] {
                     depth--;
                     if (depth === 0) {
                         const candidate = text.substring(start, j + 1);
-                        // ツール呼び出しに関連するキーが含まれているか簡易チェック
                         if (candidate.includes('"name"') && candidate.includes('"arguments"')) {
                             results.push(candidate);
                         }
@@ -148,7 +168,6 @@ function extractBalancedJsonObjects(text: string): string[] {
                 }
 
                 if (j === text.length - 1) {
-                    // 閉じブレースが見つからなかった
                     i = start + 1;
                 }
             }

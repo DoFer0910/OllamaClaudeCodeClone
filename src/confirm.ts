@@ -2,6 +2,19 @@
 import readline from 'readline';
 import chalk from 'chalk';
 
+// auto-approve モードのグローバルフラグ
+let _autoApprove = false;
+
+// auto-approve モードを設定する
+export function setAutoApprove(value: boolean): void {
+    _autoApprove = value;
+}
+
+// auto-approve モードを取得する
+export function getAutoApprove(): boolean {
+    return _autoApprove;
+}
+
 // 操作の危険度レベル
 export type DangerLevel = 'low' | 'medium' | 'high' | 'critical';
 
@@ -31,6 +44,20 @@ function getDangerStyle(level: DangerLevel): { color: (s: string) => string; lab
 
 // ユーザーに操作の承認を求める
 export async function confirmAction(request: ConfirmRequest): Promise<boolean> {
+    // auto-approve モードの場合、criticalレベル以外は自動承認
+    if (_autoApprove && request.level !== 'critical') {
+        const style = getDangerStyle(request.level);
+        console.log('');
+        console.log(chalk.dim('─'.repeat(50)));
+        console.log(style.color(` ${style.label} `) + chalk.green(' [自動承認]'));
+        console.log(chalk.white(`  ${request.description}`));
+        if (request.details) {
+            console.log(chalk.dim(`  ${request.details}`));
+        }
+        console.log(chalk.dim('─'.repeat(50)));
+        return true;
+    }
+
     const style = getDangerStyle(request.level);
 
     console.log('');

@@ -1,9 +1,64 @@
-// ファイル編集ツール（検索＆置換） — ユーザー承認付き
+// ファイル編集ツール（検索＆置換） — リッチdiff表示 + 複数箇所対応 + ユーザー承認付き
 import fs from 'fs/promises';
 import chalk from 'chalk';
 import { resolvePath, fileExists } from '../utils';
 import { confirmAction, isProtectedPath, isOutsideProject, type DangerLevel } from '../confirm';
+import { createCheckpoint } from '../git-checkpoint';
 import type { ToolDefinition } from '../types';
+
+// unified diff形式の差分を生成する
+function generateUnifiedDiff(filePath: string, oldContent: string, newContent: string): string {
+    const oldLines = oldContent.split('\n');
+    const newLines = newContent.split('\n');
+
+    const diff: string[] = [];
+    diff.push(chalk.bold(`--- a/${filePath}`));
+    diff.push(chalk.bold(`+++ b/${filePath}`));
+
+    // 簡易diff（変更箇所を検出）
+    const maxLen = Math.max(oldLines.length, newLines.length);
+    let chunkStart = -1;
+    let chunkOld: string[] = [];
+    let chunkNew: string[] = [];
+
+    for (let i = 0; i <= maxLen; i++) {
+        const oldLine = i < oldLines.length ? oldLines[i] : undefined;
+        const newLine = i < newLines.length ? newLines[i] : undefined;
+
+        if (oldLine !== newLine) {
+            if (chunkStart === -1) chunkStart = i;
+            if (oldLine !== undefined) chunkOld.push(oldLine);
+            if (newLine !== undefined) chunkNew.push(newLine);
+        } else {
+            if (chunkStart !== -1) {
+                // チャンクを出力
+                diff.push(chalk.cyan(`@@ -${chunkStart + 1},${chunkOld.length} +${chunkStart + 1},${chunkNew.length} @@`));
+                for (const line of chunkOld) {
+                    diff.push(chalk.red(`- ${line}`));
+                }
+                for (const line of chunkNew) {
+                    diff.push(chalk.green(`+ ${line}`));
+                }
+                chunkStart = -1;
+                chunkOld = [];
+                chunkNew = [];
+            }
+        }
+    }
+
+    // 最後のチャンク
+    if (chunkStart !== -1) {
+        diff.push(chalk.cyan(`@@ -${chunkStart + 1},${chunkOld.length} +${chunkStart + 1},${chunkNew.length} @@`));
+        for (const line of chunkOld) {
+            diff.push(chalk.red(`- ${line}`));
+        }
+        for (const line of chunkNew) {
+            diff.push(chalk.green(`+ ${line}`));
+        }
+    }
+
+    return diff.join('\n');
+}
 
 export const editFileTool: ToolDefinition = {
     definition: {
@@ -26,6 +81,10 @@ export const editFileTool: ToolDefinition = {
                         type: 'string',
                         description: '置換するテキスト',
                     },
+                    replaceAll: {
+                        type: 'boolean',
+                        description: 'trueの場合、すべての出現箇所を置換する（デフォルト: false で最初の1箇所のみ）',
+                    },
                 },
                 required: ['path', 'search', 'replace'],
             },
@@ -36,6 +95,7 @@ export const editFileTool: ToolDefinition = {
         const filePath = resolvePath(args.path as string);
         const search = args.search as string;
         const replace = args.replace as string;
+        const replaceAll = (args.replaceAll as boolean) || false;
 
         try {
             // システム保護パスへの編集をブロック
@@ -64,6 +124,18 @@ export const editFileTool: ToolDefinition = {
             // 出現回数を確認
             const occurrences = content.split(search).length - 1;
 
+            // 新しいコンテンツを生成
+            const newContent = replaceAll
+                ? content.split(search).join(replace)
+                : content.replace(search, replace);
+
+            // リッチdiff表示
+            const diffText = generateUnifiedDiff(
+                filePath.replace(process.cwd() + '\\', '').replace(process.cwd() + '/', ''),
+                content,
+                newContent
+            );
+
             // 危険度の決定
             let level: DangerLevel = 'medium';
             let warnings: string[] = [];
@@ -73,16 +145,12 @@ export const editFileTool: ToolDefinition = {
                 warnings.push('⚠ プロジェクト外のファイルです');
             }
 
-            // 変更差分のプレビューを作成
-            const searchPreview = search.length > 100 ? search.substring(0, 100) + '...' : search;
-            const replacePreview = replace.length > 100 ? replace.substring(0, 100) + '...' : replace;
-
+            const replaceCount = replaceAll ? occurrences : 1;
             const details = [
                 `ファイル: ${filePath}`,
-                `置換箇所: ${occurrences}箇所中1箇所（最初の出現）`,
-                ``,
-                `${chalk.red('- ' + searchPreview.split('\n').join('\n  - '))}`,
-                `${chalk.green('+ ' + replacePreview.split('\n').join('\n  + '))}`,
+                `置換箇所: ${occurrences}箇所中${replaceCount}箇所`,
+                '',
+                diffText,
                 ...warnings.map(w => `  ${w}`),
             ].join('\n  ');
 
@@ -101,12 +169,14 @@ export const editFileTool: ToolDefinition = {
                 };
             }
 
-            const newContent = content.replace(search, replace);
+            // Gitチェックポイントを作成（編集前）
+            createCheckpoint(`edit: ${filePath}`);
+
             await fs.writeFile(filePath, newContent, 'utf-8');
 
             return {
                 success: true,
-                output: `ファイルを編集しました: ${filePath}\n置換箇所: ${occurrences}箇所中1箇所（最初の出現のみ）`,
+                output: `ファイルを編集しました: ${filePath}\n置換箇所: ${occurrences}箇所中${replaceCount}箇所`,
             };
         } catch (err) {
             return { success: false, output: '', error: `ファイル編集エラー: ${(err as Error).message}` };

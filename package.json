@@ -1,7 +1,7 @@
 {
   "name": "shining-code",
-  "version": "0.3.0",
-  "description": "Ollamaベースのローカル動作CLIコーディングアシスタント",
+  "version": "1.0.0",
+  "description": "最強のローカル動作AIコーディングエージェント — Ollama + TypeScript",
   "type": "module",
   "main": "src/index.ts",
   "bin": {
@@ -9,13 +9,19 @@
   },
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "check": "tsc --noEmit",
+    "oneshot": "tsx src/index.ts -p"
   },
   "keywords": [
     "ollama",
     "cli",
     "coding-assistant",
-    "ai"
+    "ai",
+    "agent",
+    "vibe-coding",
+    "local-llm",
+    "mcp"
   ],
   "license": "MIT",
   "dependencies": {

@@ -1,12 +1,12 @@
-// Ollama クライアント — API通信とエージェントループの管理
+// Ollama クライアント — API通信とエージェントループの管理（v1.0強化版）
 import { Ollama } from 'ollama';
 import type { Message } from './types';
 import { getToolDefinitions, executeTool } from './tools/index';
-import { parseToolCallsFromText } from './utils';
+import { parseToolCallsFromText, parseXmlToolCalls } from './utils';
 import chalk from 'chalk';
 
 // エージェントループの最大反復回数（無限ループ防止）
-const MAX_TOOL_ITERATIONS = 15;
+const MAX_TOOL_ITERATIONS = 25;
 
 // ツール呼び出し情報の型
 interface ToolCallInfo {
@@ -16,13 +16,33 @@ interface ToolCallInfo {
     };
 }
 
+// モデルTier定義（RAM基準で自動選択）
+const MODEL_TIERS = [
+    { name: 'deepseek-r1:671b', tier: 'S' as const, minRamGB: 384 },
+    { name: 'qwen3:235b', tier: 'S' as const, minRamGB: 256 },
+    { name: 'llama3.1:405b', tier: 'S' as const, minRamGB: 256 },
+    { name: 'llama3.3:70b', tier: 'A' as const, minRamGB: 48 },
+    { name: 'qwen3-coder:30b', tier: 'A' as const, minRamGB: 20 },
+    { name: 'qwen2.5-coder:32b', tier: 'A' as const, minRamGB: 20 },
+    { name: 'qwen3:8b', tier: 'B' as const, minRamGB: 8 },
+    { name: 'llama3.1:8b', tier: 'B' as const, minRamGB: 8 },
+    { name: 'qwen3:1.7b', tier: 'C' as const, minRamGB: 4 },
+    { name: 'llama3.2:3b', tier: 'C' as const, minRamGB: 4 },
+];
+
 export class OllamaClient {
     private client: Ollama;
     private model: string;
+    private temperature: number;
+    private maxTokens: number;
+    private debug: boolean;
 
-    constructor(host: string, model: string) {
+    constructor(host: string, model: string, options?: { temperature?: number; maxTokens?: number; debug?: boolean }) {
         this.client = new Ollama({ host });
         this.model = model;
+        this.temperature = options?.temperature ?? 0.7;
+        this.maxTokens = options?.maxTokens ?? 8192;
+        this.debug = options?.debug ?? false;
     }
 
     // モデルを変更する
@@ -55,9 +75,59 @@ export class OllamaClient {
         }
     }
 
+    // インストール済みモデルからTier情報付きで一覧を取得する
+    async listModelsWithTiers(): Promise<{ name: string; tier: string; installed: boolean }[]> {
+        const installed = await this.listModels();
+        const installedSet = new Set(installed.map(m => m.split(':')[0]));
+
+        return MODEL_TIERS.map(t => ({
+            name: t.name,
+            tier: t.tier,
+            installed: installedSet.has(t.name.split(':')[0]),
+        }));
+    }
+
+    // 利用可能な最良のモデルを自動選択する
+    async autoSelectModel(): Promise<string | null> {
+        const installed = await this.listModels();
+        if (installed.length === 0) return null;
+
+        // インストール済みモデルのうち、Tier順で最良のものを選択
+        for (const tier of MODEL_TIERS) {
+            const modelBase = tier.name.split(':')[0];
+            const found = installed.find(m => m.startsWith(modelBase));
+            if (found) return found;
+        }
+
+        // Tierに含まれないモデルがあればそれを使用
+        return installed[0];
+    }
+
+    // サブエージェント用の簡易チャット（ツールなし）
+    async simpleChat(prompt: string, systemPrompt?: string): Promise<string> {
+        const messages: Message[] = [];
+        if (systemPrompt) {
+            messages.push({ role: 'system', content: systemPrompt });
+        }
+        messages.push({ role: 'user', content: prompt });
+
+        try {
+            const response = await this.client.chat({
+                model: this.model,
+                messages,
+                stream: false,
+                options: {
+                    temperature: this.temperature,
+                    num_predict: this.maxTokens,
+                },
+            });
+            return response.message?.content || '';
+        } catch (err) {
+            return `エラー: ${(err as Error).message}`;
+        }
+    }
+
     // 非ストリーミングチャット + ツール呼び出しのエージェントループ
-    // ※ Ollamaのストリーミングモードでは tool_calls が正しく返されない既知の問題があるため、
-    //    ツール定義付きリクエストは stream: false で送信する
     async chat(
         messages: Message[],
         onToken: (token: string) => void,
@@ -74,12 +144,15 @@ export class OllamaClient {
             let toolCalls: ToolCallInfo[] = [];
 
             try {
-                // ★ 重要: stream: false で送信することで tool_calls を確実に取得
                 const response = await this.client.chat({
                     model: this.model,
                     messages: currentMessages,
                     tools: tools,
                     stream: false,
+                    options: {
+                        temperature: this.temperature,
+                        num_predict: this.maxTokens,
+                    },
                 });
 
                 // レスポンスからテキストとツール呼び出しを取得
@@ -90,24 +163,35 @@ export class OllamaClient {
                     toolCalls = response.message.tool_calls as ToolCallInfo[];
                 }
 
-                // ★ フォールバック: tool_calls が空でも、テキストにJSONツール呼び出しが含まれている場合
+                // フォールバック1: テキストにJSONツール呼び出しが含まれている場合
                 if (toolCalls.length === 0 && fullContent) {
                     const fallbackCalls = parseToolCallsFromText(fullContent);
                     if (fallbackCalls.length > 0) {
-                        console.log(chalk.dim('  ℹ テキストからツール呼び出しを検出（フォールバックモード）'));
+                        if (this.debug) {
+                            console.log(chalk.dim('  ℹ テキストからツール呼び出しを検出（JSONフォールバック）'));
+                        }
                         toolCalls = fallbackCalls.map(fc => ({
-                            function: {
-                                name: fc.name,
-                                arguments: fc.arguments,
-                            },
+                            function: { name: fc.name, arguments: fc.arguments },
                         }));
-                        // フォールバックの場合、JSONテキスト部分は表示しない
+                        fullContent = '';
+                    }
+                }
+
+                // フォールバック2: XMLツール呼び出し（Qwen互換）
+                if (toolCalls.length === 0 && fullContent) {
+                    const xmlCalls = parseXmlToolCalls(fullContent);
+                    if (xmlCalls.length > 0) {
+                        if (this.debug) {
+                            console.log(chalk.dim('  ℹ テキストからツール呼び出しを検出（XMLフォールバック）'));
+                        }
+                        toolCalls = xmlCalls.map(fc => ({
+                            function: { name: fc.name, arguments: fc.arguments },
+                        }));
                         fullContent = '';
                     }
                 }
             } catch (err) {
                 const errorMsg = (err as Error).message;
-                // モデルが見つからない場合の分かりやすいエラー
                 if (errorMsg.includes('not found') || errorMsg.includes('model')) {
                     throw new Error(
                         `モデル "${this.model}" が見つかりません。\n` +
@@ -119,7 +203,6 @@ export class OllamaClient {
 
             // ツール呼び出しがなければ、最終レスポンスとして返す
             if (toolCalls.length === 0) {
-                // テキストを表示
                 if (fullContent) {
                     onToken(fullContent);
                 }
@@ -150,13 +233,10 @@ export class OllamaClient {
                 const toolName = toolCall.function.name;
                 const toolArgs = toolCall.function.arguments;
 
-                // ツール呼び出しの通知
                 if (onToolCall) onToolCall(toolName);
 
-                // ツール実行
                 const result = await executeTool(toolName, toolArgs);
 
-                // ツール結果をメッセージに追加
                 const toolMessage: Message = {
                     role: 'tool',
                     content: result,
@@ -164,7 +244,6 @@ export class OllamaClient {
                 currentMessages.push(toolMessage);
             }
 
-            // 次のイテレーションでは改行を出力して区切る
             onToken('\n');
         }
 
