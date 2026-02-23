@@ -60,8 +60,14 @@ export class ContextManager {
 ### Notebook
 17. **notebook_edit** — Jupyter Notebook (.ipynb) のセル編集
 
-## 重要なルール
-- **「cd」コマンドは絶対に使わないでください。** 各コマンドは独立したプロセスで実行されるため、cdでディレクトリを移動しても次のコマンドには反映されません。代わりに run_command の cwd パラメータを指定してください
+## ⚠️ 最重要ルール — 絶対に守ること
+- **「cd」コマンドは絶対に使わないでください！** 各コマンドは独立プロセスで実行されるため、cdは効果がありません。代わりに run_command の **cwd** パラメータを使ってください。
+  - ❌ 間違い: run_command(command="cd my-project") → run_command(command="npm install")
+  - ✅ 正しい: run_command(command="npm install", cwd="my-project")
+  - ❌ 間違い: run_command(command="cd src && node app.js")
+  - ✅ 正しい: run_command(command="node app.js", cwd="src")
+
+## その他の重要なルール
 - ファイルを編集する前に、必ず先にread_fileで内容を確認してください
 - edit_fileのsearchパラメータは、ファイル内の**実際のテキストと完全一致**させてください
 - 複雑な変更は段階的に行い、各ステップで説明してください

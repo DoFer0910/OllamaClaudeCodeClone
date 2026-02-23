@@ -1,5 +1,7 @@
-// コマンド実行ツール — ユーザー承認付き + バックグラウンド実行対応
+// コマンド実行ツール — ユーザー承認付き + バックグラウンド実行対応 + cdインターセプト
 import { spawn } from 'child_process';
+import path from 'path';
+import fs from 'fs';
 import { truncate } from '../utils';
 import { confirmAction, assessCommandDanger } from '../confirm';
 import type { ToolDefinition } from '../types';
@@ -13,6 +15,14 @@ const BG_COMMAND_TIMEOUT = 300000;
 // バックグラウンドプロセスの管理
 const backgroundProcesses: Map<string, { pid: number; stdout: string; stderr: string; done: boolean; exitCode: number | null }> = new Map();
 let bgId = 0;
+
+// cdコマンドインターセプト用: 仮想カレントディレクトリを追跡
+let currentWorkingDirectory: string = process.cwd();
+
+// 現在の仮想カレントディレクトリを取得する
+export function getCurrentCwd(): string {
+    return currentWorkingDirectory;
+}
 
 export const runCommandTool: ToolDefinition = {
     definition: {
@@ -47,9 +57,35 @@ export const runCommandTool: ToolDefinition = {
 
     async execute(args) {
         const command = args.command as string;
-        const cwd = (args.cwd as string) || process.cwd();
         const background = (args.background as boolean) || false;
         const customTimeout = args.timeout as number | undefined;
+
+        // cdコマンドをインターセプトして、仮想カレントディレクトリを変更する
+        const cdMatch = command.match(/^\s*cd\s+(.+)$/i);
+        if (cdMatch) {
+            const targetDir = cdMatch[1].replace(/["']/g, '').trim();
+            const resolved = path.resolve(currentWorkingDirectory, targetDir);
+            try {
+                const stat = fs.statSync(resolved);
+                if (stat.isDirectory()) {
+                    currentWorkingDirectory = resolved;
+                    return {
+                        success: true,
+                        output: `作業ディレクトリを変更しました: ${resolved}\n（注意: cdコマンドの代わりに、run_command の cwd パラメータの使用を推奨します）`,
+                    };
+                }
+            } catch {
+                // ディレクトリが存在しない場合
+            }
+            return {
+                success: false,
+                output: '',
+                error: `ディレクトリが見つかりません: ${resolved}`,
+            };
+        }
+
+        // cwdパラメータが指定されていない場合、仮想カレントディレクトリを使用
+        const cwd = (args.cwd as string) || currentWorkingDirectory;
 
         // コマンドの危険度を判定
         const danger = assessCommandDanger(command);
