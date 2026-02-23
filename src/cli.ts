@@ -163,7 +163,7 @@ export class CLI {
     private printBanner(): void {
         console.log('');
         console.log(chalk.bold.cyan('  ╔══════════════════════════════════════╗'));
-        console.log(chalk.bold.cyan('  ║') + chalk.bold.white('     ✨ ShiningCode v0.1.0 ✨         ') + chalk.bold.cyan('║'));
+        console.log(chalk.bold.cyan('  ║') + chalk.bold.white('     ✨ ShiningCode v0.2.0 ✨         ') + chalk.bold.cyan('║'));
         console.log(chalk.bold.cyan('  ║') + chalk.dim('  Ollamaベース コーディングアシスタント ') + chalk.bold.cyan('║'));
         console.log(chalk.bold.cyan('  ╚══════════════════════════════════════╝'));
         console.log('');

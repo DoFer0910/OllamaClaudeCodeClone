@@ -2,9 +2,19 @@
 import { Ollama } from 'ollama';
 import type { Message } from './types';
 import { getToolDefinitions, executeTool } from './tools/index';
+import { parseToolCallsFromText } from './utils';
+import chalk from 'chalk';
 
 // エージェントループの最大反復回数（無限ループ防止）
 const MAX_TOOL_ITERATIONS = 15;
+
+// ツール呼び出し情報の型
+interface ToolCallInfo {
+    function: {
+        name: string;
+        arguments: Record<string, unknown>;
+    };
+}
 
 export class OllamaClient {
     private client: Ollama;
@@ -45,7 +55,9 @@ export class OllamaClient {
         }
     }
 
-    // ストリーミングチャット + ツール呼び出しのエージェントループ
+    // 非ストリーミングチャット + ツール呼び出しのエージェントループ
+    // ※ Ollamaのストリーミングモードでは tool_calls が正しく返されない既知の問題があるため、
+    //    ツール定義付きリクエストは stream: false で送信する
     async chat(
         messages: Message[],
         onToken: (token: string) => void,
@@ -58,28 +70,39 @@ export class OllamaClient {
         while (iteration < MAX_TOOL_ITERATIONS) {
             iteration++;
 
-            // ストリーミングレスポンスの生成
             let fullContent = '';
-            let toolCalls: Array<{ function: { name: string; arguments: Record<string, unknown> } }> = [];
+            let toolCalls: ToolCallInfo[] = [];
 
             try {
-                const stream = await this.client.chat({
+                // ★ 重要: stream: false で送信することで tool_calls を確実に取得
+                const response = await this.client.chat({
                     model: this.model,
                     messages: currentMessages,
                     tools: tools,
-                    stream: true,
+                    stream: false,
                 });
 
-                for await (const chunk of stream) {
-                    // テキストの処理
-                    if (chunk.message?.content) {
-                        fullContent += chunk.message.content;
-                        onToken(chunk.message.content);
-                    }
+                // レスポンスからテキストとツール呼び出しを取得
+                fullContent = response.message?.content || '';
 
-                    // ツール呼び出しの処理
-                    if (chunk.message?.tool_calls && chunk.message.tool_calls.length > 0) {
-                        toolCalls = chunk.message.tool_calls as typeof toolCalls;
+                // 構造化された tool_calls を確認
+                if (response.message?.tool_calls && response.message.tool_calls.length > 0) {
+                    toolCalls = response.message.tool_calls as ToolCallInfo[];
+                }
+
+                // ★ フォールバック: tool_calls が空でも、テキストにJSONツール呼び出しが含まれている場合
+                if (toolCalls.length === 0 && fullContent) {
+                    const fallbackCalls = parseToolCallsFromText(fullContent);
+                    if (fallbackCalls.length > 0) {
+                        console.log(chalk.dim('  ℹ テキストからツール呼び出しを検出（フォールバックモード）'));
+                        toolCalls = fallbackCalls.map(fc => ({
+                            function: {
+                                name: fc.name,
+                                arguments: fc.arguments,
+                            },
+                        }));
+                        // フォールバックの場合、JSONテキスト部分は表示しない
+                        fullContent = '';
                     }
                 }
             } catch (err) {
@@ -96,8 +119,17 @@ export class OllamaClient {
 
             // ツール呼び出しがなければ、最終レスポンスとして返す
             if (toolCalls.length === 0) {
+                // テキストを表示
+                if (fullContent) {
+                    onToken(fullContent);
+                }
                 const assistantMessage: Message = { role: 'assistant', content: fullContent };
                 return assistantMessage;
+            }
+
+            // テキスト部分があれば先に表示
+            if (fullContent) {
+                onToken(fullContent);
             }
 
             // アシスタントのメッセージ（ツール呼び出し情報含む）を追加

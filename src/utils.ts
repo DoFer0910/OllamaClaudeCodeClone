@@ -61,3 +61,58 @@ export function truncate(str: string, maxLen: number): string {
     if (str.length <= maxLen) return str;
     return str.substring(0, maxLen - 3) + '...';
 }
+
+// ツール呼び出しのパース結果の型
+export interface ParsedToolCall {
+    name: string;
+    arguments: Record<string, unknown>;
+}
+
+// テキスト本文からツール呼び出しJSONを検出するフォールバックパーサー
+// モデルが tool_calls フィールドではなくテキストにJSONを出力した場合に使用
+export function parseToolCallsFromText(text: string): ParsedToolCall[] {
+    const results: ParsedToolCall[] = [];
+    if (!text || text.trim().length === 0) return results;
+
+    // パターン1: ```json ... ``` コードブロック内のJSON
+    const codeBlockPattern = /```(?:json)?\s*\n?([\s\S]*?)```/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = codeBlockPattern.exec(text)) !== null) {
+        const parsed = tryParseToolCall(match[1].trim());
+        if (parsed) results.push(parsed);
+    }
+
+    // コードブロックで見つかったら、それを優先
+    if (results.length > 0) return results;
+
+    // パターン2: テキスト中の {"name": "...", "arguments": {...}} パターン
+    const jsonPattern = /\{[\s\S]*?"name"\s*:\s*"[^"]+?"[\s\S]*?"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g;
+    while ((match = jsonPattern.exec(text)) !== null) {
+        const parsed = tryParseToolCall(match[0]);
+        if (parsed) results.push(parsed);
+    }
+
+    return results;
+}
+
+// 単一のJSONテキストをツール呼び出しとしてパースする
+function tryParseToolCall(jsonStr: string): ParsedToolCall | null {
+    try {
+        const obj = JSON.parse(jsonStr);
+
+        // パターA: {"name": "tool_name", "arguments": {...}}
+        if (obj.name && typeof obj.name === 'string' && obj.arguments && typeof obj.arguments === 'object') {
+            return { name: obj.name, arguments: obj.arguments };
+        }
+
+        // パターンB: {"function": {"name": "tool_name", "arguments": {...}}}
+        if (obj.function?.name && obj.function?.arguments) {
+            return { name: obj.function.name, arguments: obj.function.arguments };
+        }
+
+        return null;
+    } catch {
+        return null;
+    }
+}
