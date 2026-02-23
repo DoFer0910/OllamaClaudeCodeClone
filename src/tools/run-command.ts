@@ -1,6 +1,7 @@
-// コマンド実行ツール
+// コマンド実行ツール — ユーザー承認付き
 import { spawn } from 'child_process';
 import { truncate } from '../utils';
+import { confirmAction, assessCommandDanger } from '../confirm';
 import type { ToolDefinition } from '../types';
 
 // コマンド出力の最大長
@@ -13,7 +14,7 @@ export const runCommandTool: ToolDefinition = {
         type: 'function',
         function: {
             name: 'run_command',
-            description: 'シェルコマンドを実行し、標準出力と標準エラー出力を返す。',
+            description: 'シェルコマンドを実行し、標準出力と標準エラー出力を返す。実行前にユーザーの承認を求める。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -34,6 +35,29 @@ export const runCommandTool: ToolDefinition = {
     async execute(args) {
         const command = args.command as string;
         const cwd = (args.cwd as string) || process.cwd();
+
+        // コマンドの危険度を判定
+        const danger = assessCommandDanger(command);
+
+        // 危険コマンドの場合、理由を表示
+        const details = danger.reasons.length > 0
+            ? `コマンド: ${command}\n  ⚠ 検出された危険: ${danger.reasons.join(', ')}`
+            : `コマンド: ${command}`;
+
+        // ユーザー承認を求める
+        const approved = await confirmAction({
+            description: 'シェルコマンドを実行します',
+            details,
+            level: danger.level,
+        });
+
+        if (!approved) {
+            return {
+                success: false,
+                output: '',
+                error: 'ユーザーによりコマンド実行がキャンセルされました',
+            };
+        }
 
         return new Promise((resolve) => {
             const isWindows = process.platform === 'win32';
