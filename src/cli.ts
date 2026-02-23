@@ -485,7 +485,7 @@ export class CLI {
     private printBanner(): void {
         console.log('');
         console.log(chalk.bold.cyan('  ╔══════════════════════════════════════════╗'));
-        console.log(chalk.bold.cyan('  ║') + chalk.bold.white('      ✨ ShiningCode v1.0.1 ✨           ') + chalk.bold.cyan('║'));
+        console.log(chalk.bold.cyan('  ║') + chalk.bold.white('      ✨ ShiningCode v1.0.2 ✨           ') + chalk.bold.cyan('║'));
         console.log(chalk.bold.cyan('  ║') + chalk.dim('  最強のローカルAIコーディングエージェント ') + chalk.bold.cyan('║'));
         console.log(chalk.bold.cyan('  ╚══════════════════════════════════════════╝'));
         console.log('');

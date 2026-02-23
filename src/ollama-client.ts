@@ -1,4 +1,4 @@
-// Ollama クライアント — API通信とエージェントループの管理（v1.0強化版）
+// Ollama クライアント — API通信とエージェントループの管理（v1.0.2強化版）
 import { Ollama } from 'ollama';
 import type { Message } from './types';
 import { getToolDefinitions, executeTool } from './tools/index';
@@ -7,6 +7,45 @@ import chalk from 'chalk';
 
 // エージェントループの最大反復回数（無限ループ防止）
 const MAX_TOOL_ITERATIONS = 25;
+
+// リトライ設定
+const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 2000;
+
+// リトライ可能なエラーかどうかを判定する
+function isRetryableError(err: unknown): boolean {
+    const message = (err as Error).message || '';
+    const retryablePatterns = [
+        'fetch failed',
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'socket hang up',
+        'network',
+        'UND_ERR_CONNECT_TIMEOUT',
+        'UND_ERR_SOCKET',
+    ];
+    return retryablePatterns.some(p => message.toLowerCase().includes(p.toLowerCase()));
+}
+
+// ユーザー向けの詳細なエラーメッセージを生成する
+function formatConnectionError(err: unknown, model: string): string {
+    const message = (err as Error).message || '不明なエラー';
+    if (message.includes('fetch failed') || message.includes('ECONNREFUSED')) {
+        return [
+            `Ollamaサーバーとの通信に失敗しました。`,
+            ``,
+            `考えられる原因と対処法:`,
+            `  1. Ollamaサーバーが停止している → "ollama serve" で起動`,
+            `  2. モデル "${model}" のロードに時間がかかっている → しばらく待ってから再試行`,
+            `  3. メモリ不足でモデルがロードできない → より小さいモデルを試す`,
+            `     例: npm start -- --model qwen3:8b`,
+            ``,
+            `元のエラー: ${message}`,
+        ].join('\n');
+    }
+    return message;
+}
 
 // ツール呼び出し情報の型
 interface ToolCallInfo {
@@ -33,12 +72,14 @@ const MODEL_TIERS = [
 export class OllamaClient {
     private client: Ollama;
     private model: string;
+    private host: string;
     private temperature: number;
     private maxTokens: number;
     private debug: boolean;
 
     constructor(host: string, model: string, options?: { temperature?: number; maxTokens?: number; debug?: boolean }) {
         this.client = new Ollama({ host });
+        this.host = host;
         this.model = model;
         this.temperature = options?.temperature ?? 0.7;
         this.maxTokens = options?.maxTokens ?? 8192;
@@ -103,6 +144,33 @@ export class OllamaClient {
         return installed[0];
     }
 
+    // リトライ付きでOllama APIを呼び出す
+    private async callWithRetry<T>(apiCall: () => Promise<T>, context: string = 'API'): Promise<T> {
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                return await apiCall();
+            } catch (err) {
+                const isLastAttempt = attempt === MAX_RETRIES;
+                const canRetry = isRetryableError(err);
+
+                if (isLastAttempt || !canRetry) {
+                    throw err;
+                }
+
+                const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+                console.log(chalk.yellow(
+                    `  ⚠ ${context}通信エラー（${(err as Error).message}）— ${delay / 1000}秒後にリトライ (${attempt}/${MAX_RETRIES})`
+                ));
+                await new Promise(resolve => setTimeout(resolve, delay));
+
+                // 接続が切れた場合、クライアントを再作成
+                this.client = new Ollama({ host: this.host });
+            }
+        }
+        // ここには到達しないが、TypeScriptの型チェック用
+        throw new Error('リトライ回数を超過しました');
+    }
+
     // サブエージェント用の簡易チャット（ツールなし）
     async simpleChat(prompt: string, systemPrompt?: string): Promise<string> {
         const messages: Message[] = [];
@@ -112,18 +180,22 @@ export class OllamaClient {
         messages.push({ role: 'user', content: prompt });
 
         try {
-            const response = await this.client.chat({
-                model: this.model,
-                messages,
-                stream: false,
-                options: {
-                    temperature: this.temperature,
-                    num_predict: this.maxTokens,
-                },
-            });
+            const response = await this.callWithRetry(
+                () => this.client.chat({
+                    model: this.model,
+                    messages,
+                    stream: false,
+                    keep_alive: '30m',
+                    options: {
+                        temperature: this.temperature,
+                        num_predict: this.maxTokens,
+                    },
+                }),
+                'simpleChat'
+            );
             return response.message?.content || '';
         } catch (err) {
-            return `エラー: ${(err as Error).message}`;
+            return `エラー: ${formatConnectionError(err, this.model)}`;
         }
     }
 
@@ -144,16 +216,20 @@ export class OllamaClient {
             let toolCalls: ToolCallInfo[] = [];
 
             try {
-                const response = await this.client.chat({
-                    model: this.model,
-                    messages: currentMessages,
-                    tools: tools,
-                    stream: false,
-                    options: {
-                        temperature: this.temperature,
-                        num_predict: this.maxTokens,
-                    },
-                });
+                const response = await this.callWithRetry(
+                    () => this.client.chat({
+                        model: this.model,
+                        messages: currentMessages,
+                        tools: tools,
+                        stream: false,
+                        keep_alive: '30m',
+                        options: {
+                            temperature: this.temperature,
+                            num_predict: this.maxTokens,
+                        },
+                    }),
+                    'chat'
+                );
 
                 // レスポンスからテキストとツール呼び出しを取得
                 fullContent = response.message?.content || '';
@@ -198,7 +274,8 @@ export class OllamaClient {
                         `"ollama pull ${this.model}" でモデルをダウンロードしてください。`
                     );
                 }
-                throw err;
+                // 接続エラーの場合、ユーザー向けの詳細メッセージを表示
+                throw new Error(formatConnectionError(err, this.model));
             }
 
             // ツール呼び出しがなければ、最終レスポンスとして返す

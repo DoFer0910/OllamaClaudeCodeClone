@@ -107,7 +107,7 @@ async function main(): Promise<void> {
 
     // バージョン表示
     if (args.version) {
-        console.log('ShiningCode v1.0.0');
+        console.log('ShiningCode v1.0.2');
         process.exit(0);
     }
 

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>じゃんけンゲーム</title>
+</head>
+<body>
+    <h1>じゃんけンゲーム</h1>
+    <button onclick='playGame("rock")'>Rock</button>
+    <button onclick='playGame("paper")'>Paper</button>
+    <button onclick='playGame("scissors")'>Scissors</button>
+    <div id='result'></div>
+    <script>
+        function playGame(playerChoice) {
+            const choices = ['rock', 'paper', 'scissors'];
+            const computerChoice = choices[Math.floor(Math.random() * choices.length)];
+            let result;
+
+            if (playerChoice === computerChoice) {
+                result = 'Draw!';
+            } else if ((playerChoice === 'rock' && computerChoice === 'scissors') ||
+                      (playerChoice === 'paper' && computerChoice === 'rock') ||
+                      (playerChoice === 'scissors' && computerChoice === 'paper')) {
+                result = 'You Win!';
+            } else {
+                result = 'Computer Wins!';
+            }
+
+            document.getElementById('result').innerText = `Player: ${playerChoice}
+Computer: ${computerChoice}
+Result: ${result}`;
+        }
+    </script>
+</body>
+</html>
