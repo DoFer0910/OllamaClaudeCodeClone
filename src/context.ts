@@ -35,6 +35,8 @@ export class ContextManager {
 7. **list_directory** — ディレクトリの内容を一覧表示する
 
 ## 重要なルール
+- **「cd」コマンドは絶対に使わないでください。** 各コマンドは独立したプロセスで実行されるため、cdでディレクトリを移動しても次のコマンドには反映されません。代わりに run_command の cwd パラメータを指定してください（例: run_command(command="npm init -y", cwd="test-project")）
+- ファイルを作成・書き込みする際は、write_file の path にサブディレクトリを含めたパスを指定してください（例: write_file(path="test-project/src/index.js", content="...")）。cwdからの相対パスまたは絶対パスを使ってください
 - ファイルを編集する前に、必ず先にread_fileで内容を確認してください
 - edit_fileのsearchパラメータは、ファイル内の**実際のテキストと完全一致**させてください
 - コマンド実行時はOSがWindowsであることを考慮してください（cmdコマンドを使用）

@@ -86,11 +86,79 @@ export function parseToolCallsFromText(text: string): ParsedToolCall[] {
     // コードブロックで見つかったら、それを優先
     if (results.length > 0) return results;
 
-    // パターン2: テキスト中の {"name": "...", "arguments": {...}} パターン
-    const jsonPattern = /\{[\s\S]*?"name"\s*:\s*"[^"]+?"[\s\S]*?"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g;
-    while ((match = jsonPattern.exec(text)) !== null) {
-        const parsed = tryParseToolCall(match[0]);
+    // パターン2: ブレースバランシングでJSONオブジェクトを正確に切り出す
+    const jsonObjects = extractBalancedJsonObjects(text);
+    for (const jsonStr of jsonObjects) {
+        const parsed = tryParseToolCall(jsonStr);
         if (parsed) results.push(parsed);
+    }
+
+    return results;
+}
+
+// テキストからブレースバランシングでJSONオブジェクトを抽出する
+// 文字列リテラル内の { } やエスケープ文字を正しく処理する
+function extractBalancedJsonObjects(text: string): string[] {
+    const results: string[] = [];
+    let i = 0;
+
+    while (i < text.length) {
+        if (text[i] === '{') {
+            // ブレースバランシングでオブジェクト全体を切り出す
+            const start = i;
+            let depth = 0;
+            let inString = false;
+            let escaped = false;
+
+            for (let j = i; j < text.length; j++) {
+                const ch = text[j];
+
+                if (escaped) {
+                    // エスケープされた文字はスキップ
+                    escaped = false;
+                    continue;
+                }
+
+                if (ch === '\\' && inString) {
+                    // 次の文字をエスケープとして扱う
+                    escaped = true;
+                    continue;
+                }
+
+                if (ch === '"') {
+                    inString = !inString;
+                    continue;
+                }
+
+                if (inString) continue;
+
+                if (ch === '{') {
+                    depth++;
+                } else if (ch === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        const candidate = text.substring(start, j + 1);
+                        // ツール呼び出しに関連するキーが含まれているか簡易チェック
+                        if (candidate.includes('"name"') && candidate.includes('"arguments"')) {
+                            results.push(candidate);
+                        }
+                        i = j + 1;
+                        break;
+                    }
+                }
+
+                if (j === text.length - 1) {
+                    // 閉じブレースが見つからなかった
+                    i = start + 1;
+                }
+            }
+
+            if (depth !== 0) {
+                i = start + 1;
+            }
+        } else {
+            i++;
+        }
     }
 
     return results;
@@ -101,7 +169,7 @@ function tryParseToolCall(jsonStr: string): ParsedToolCall | null {
     try {
         const obj = JSON.parse(jsonStr);
 
-        // パターA: {"name": "tool_name", "arguments": {...}}
+        // パターンA: {"name": "tool_name", "arguments": {...}}
         if (obj.name && typeof obj.name === 'string' && obj.arguments && typeof obj.arguments === 'object') {
             return { name: obj.name, arguments: obj.arguments };
         }
